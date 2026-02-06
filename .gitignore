@@ -1,0 +1,23 @@
+# ROS 2 Build & Install artifacts
+build/
+install/
+log/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv
+env/
+venv/
+
+# IDE settings (VSCode, JetBrains)
+.vscode/
+.idea/
+
+# System
+.DS_Store
+
+# PX4 specific (if you clone px4 inside, usually handled by submodule but just in case)
+PX4-Autopilot/

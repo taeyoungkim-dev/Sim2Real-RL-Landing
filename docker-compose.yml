@@ -1,0 +1,14 @@
+services:
+  ros2-drone:
+    build: .
+    image: my_drone_ros2:latest
+    container_name: drone_brain
+    network_mode: host
+    ipc: host
+    privileged: true
+    volumes:
+      - /dev:/dev
+      - ./user_code:/ros2_ws/src/user_code
+    tty: true
+    stdin_open: true
+    restart: always

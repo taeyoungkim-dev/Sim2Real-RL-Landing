@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             'hover = drone_landing_control.simple_hover:main',
             'indoor_hover = drone_landing_control.simple_hover_indoor_test:main'
+            'figure_eight = drone_landing_control.figure_8.py:main'
         ],
     },
 )

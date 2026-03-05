@@ -7,10 +7,9 @@ import cv2
 import cv2.aruco as aruco
 import numpy as np
 import threading
-import time
 
 # ==========================================
-# 1. 캘리브레이션 및 ArUco 설정
+# 1. 캘리브레이션 데이터 세팅
 # ==========================================
 camera_matrix = np.array([
     [848.42845317,   0.        , 282.8888751 ],
@@ -22,16 +21,10 @@ dist_coeffs = np.array([
 ])
 
 MARKER_SIZE = 0.025  # 25mm = 0.025m
-aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_4X4_250)
-aruco_params = aruco.DetectorParameters()
-detector = aruco.ArucoDetector(aruco_dict, aruco_params)
 
-marker_points = np.array([
-    [-MARKER_SIZE / 2,  MARKER_SIZE / 2, 0],
-    [ MARKER_SIZE / 2,  MARKER_SIZE / 2, 0],
-    [ MARKER_SIZE / 2, -MARKER_SIZE / 2, 0],
-    [-MARKER_SIZE / 2, -MARKER_SIZE / 2, 0]
-], dtype=np.float32)
+# [수정됨] 구버전(4.5.x) ArUco 문법으로 롤백!
+aruco_dict = aruco.Dictionary_get(aruco.DICT_4X4_250)
+aruco_params = aruco.DetectorParameters_create()
 
 # ==========================================
 # 2. 비행 제어 + 녹화 통합 노드
@@ -53,14 +46,10 @@ class ArucoDescentTestNode(Node):
         self.timer = self.create_timer(0.1, self.timer_callback) # 10Hz
         self.timer_count = 0
         
-        # 비행 상태 변수
         self.target_altitude = 0.0 
         self.flight_state = "INIT"
-        
-        # 녹화 제어 변수
         self.is_recording = True
         
-        # 카메라 녹화 스레드 시작
         self.cam_thread = threading.Thread(target=self.camera_record_loop)
         self.cam_thread.start()
 
@@ -78,22 +67,21 @@ class ArucoDescentTestNode(Node):
 
         elif self.timer_count == 50:
             self.get_logger().info("3단계: 목표 고도 10m로 쾌속 상승!")
-            self.target_altitude = -10.0 # NED 좌표계이므로 위로 갈수록 마이너스
+            self.target_altitude = -10.0 # 위로 10m
             self.flight_state = "CLIMBING"
 
-        elif self.timer_count == 150: # 10초간 상승 완료 대기
-            self.get_logger().info("4단계: 10m 도달. 지금부터 천천히 하강하며 마커를 탐색합니다 🚁⬇️")
+        elif self.timer_count == 150: 
+            self.get_logger().info("4단계: 10m 도달. 천천히 하강하며 마커를 탐색합니다 🚁⬇️")
             self.flight_state = "DESCENDING"
 
-        # 하강 로직 (0.1초마다 0.05m씩 하강 = 1초에 0.5m 속도로 매우 천천히 하강)
         if self.flight_state == "DESCENDING":
-            if self.target_altitude < -0.5: # 지상 0.5m까지 하강
-                self.target_altitude += 0.05
+            if self.target_altitude < -0.5: 
+                self.target_altitude += 0.05 # 초당 0.5m씩 천천히 하강
             else:
                 self.get_logger().info("5단계: 지면 접근 완료. 착륙(Land) 및 녹화 종료 🛑")
                 self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
                 self.flight_state = "LANDED"
-                self.is_recording = False # 카메라 스레드 종료 신호
+                self.is_recording = False
 
         self.timer_count += 1
 
@@ -121,14 +109,13 @@ class ArucoDescentTestNode(Node):
         self.vehicle_command_pub.publish(msg)
 
     # ------------------------------------------
-    # 카메라 녹화 스레드 (비행 제어와 별개로 동작)
+    # 카메라 녹화 스레드
     # ------------------------------------------
     def camera_record_loop(self):
         cap = cv2.VideoCapture(0)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-        # 비디오 저장 설정 (초당 30프레임)
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter('aruco_descent_10m.mp4', fourcc, 30.0, (640, 480))
 
@@ -140,27 +127,29 @@ class ArucoDescentTestNode(Node):
                 continue
 
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            corners, ids, rejected = detector.detectMarkers(gray)
+            
+            # [수정됨] 구버전 문법 적용
+            corners, ids, rejected = aruco.detectMarkers(gray, aruco_dict, parameters=aruco_params)
 
-            # 드론의 현재 목표 고도를 화면 왼쪽 위에 표시
             cv2.putText(frame, f"Target Alt: {-self.target_altitude:.1f}m", (10, 30), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
             if ids is not None:
                 aruco.drawDetectedMarkers(frame, corners, ids)
+                
+                # [수정됨] solvePnP 대신 편하게 배열로 뽑아주는 estimatePoseSingleMarkers 사용
+                rvecs, tvecs, _ = aruco.estimatePoseSingleMarkers(corners, MARKER_SIZE, camera_matrix, dist_coeffs)
+                
                 for i in range(len(ids)):
-                    ret, rvec, tvec = cv2.solvePnP(marker_points, corners[i], camera_matrix, dist_coeffs)
-                    if ret:
-                        cv2.drawFrameAxes(frame, camera_matrix, dist_coeffs, rvec, tvec, 0.015)
-                        distance_z = tvec[2][0]
-                        text = f"Dist: {distance_z:.3f}m"
-                        cv2.putText(frame, text, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 
-                                    0.8, (0, 255, 0), 2, cv2.LINE_AA)
+                    cv2.drawFrameAxes(frame, camera_matrix, dist_coeffs, rvecs[i], tvecs[i], 0.015)
+                    distance_z = tvecs[i][0][2]
+                    text = f"Dist: {distance_z:.3f}m"
+                    cv2.putText(frame, text, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 
+                                0.8, (0, 255, 0), 2, cv2.LINE_AA)
             else:
                 cv2.putText(frame, "Marker LOST", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 
                             0.8, (0, 0, 255), 2)
 
-            # 영상 프레임 저장
             out.write(frame)
 
         cap.release()
@@ -173,7 +162,7 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        node.is_recording = False # 강제 종료 시 녹화 파일 안전하게 닫기
+        node.is_recording = False 
     finally:
         node.destroy_node()
         rclpy.shutdown()

@@ -2,6 +2,7 @@ import rclpy
 from rclpy.node import Node
 from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand
 
+TARGET_ALTITUE = 10.0
 class OutdoorHoverNode(Node):
     def __init__(self):
         super().__init__('outdoor_hover_node')
@@ -31,7 +32,7 @@ class OutdoorHoverNode(Node):
         # [핵심 수정 2] 시동 후 2초 대기 후 이륙 지령 하달
         elif self.timer_count == 50:  # 5.0초: 1.5m 이륙 시작
             self.get_logger().info("3단계: 고도 1.5m로 이륙(Takeoff) 시작!")
-            self.target_altitude = -1.5 
+            self.target_altitude = -1*TARGET_ALTITUE
 
         elif self.timer_count == 150:  # 15.0초: 10초간 체공 후 자동 착륙
             self.get_logger().info("4단계: 비행 완료. 자동 착륙(Land) 시작 🛑")

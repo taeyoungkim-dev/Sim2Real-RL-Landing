@@ -3,6 +3,8 @@ from rclpy.node import Node
 from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand
 import math
 
+TARGET_ALTITUE = 3.0
+
 class Figure8Node(Node):
     def __init__(self):
         super().__init__('figure8_node')
@@ -20,7 +22,7 @@ class Figure8Node(Node):
         self.radius_x = 4.0  # X축 반경 (미터)
         self.radius_y = 4.0  # Y축 반경 (미터)
         self.omega = 0.8     # 비행 속도 (값이 커질수록 빨라짐)
-        self.flight_altitude = -2.0 # 비행 고도 2m
+        self.flight_altitude = -TARGET_ALTITUE # 비행 고도 2m
 
     def timer_callback(self):
         self.publish_offboard_control_mode()

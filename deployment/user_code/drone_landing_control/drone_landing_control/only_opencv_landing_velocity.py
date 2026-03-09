@@ -177,18 +177,30 @@ class ArucoUltimateLandNode(Node):
     # ------------------------------------------
     def camera_record_loop(self):
         cap = cv2.VideoCapture(0)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        requested_width = 1080
+        requested_height = 720
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, requested_width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, requested_height)
+
+        actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter('aruco_ultimate_land.mp4', fourcc, 30.0, (640, 480))
+        out = cv2.VideoWriter('aruco_ultimate_land.mp4', fourcc, 30.0, (actual_width, actual_height))
 
         self.get_logger().info("🎥 궁극의 혼합 제어 녹화 시작: aruco_ultimate_land.mp4")
+        self.get_logger().info(
+            f"📷 Camera resolution request={requested_width}x{requested_height}, applied={actual_width}x{actual_height}"
+        )
 
         while self.is_recording:
             ret, frame = cap.read()
             if not ret:
                 continue
+
+            height, width = frame.shape[:2]
+            center_x = int(width / 2)
+            center_y = int(height / 2)
 
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             corners, ids, rejected = aruco.detectMarkers(gray, aruco_dict, parameters=aruco_params)
@@ -225,18 +237,17 @@ class ArucoUltimateLandNode(Node):
                 text = f"Mode: TRACKING | Vx:{self.target_vx:.2f} Vy:{self.target_vy:.2f}"
                 cv2.putText(frame, text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
                 
-                cv2.circle(frame, (int(320 + raw_x*1000), int(240 + raw_y*1000)), 5, (0, 0, 255), -1) 
-                cv2.circle(frame, (int(320 + self.filtered_x*1000), int(240 + self.filtered_y*1000)), 8, (0, 255, 0), 2) 
+                cv2.circle(frame, (int(center_x + raw_x*1000), int(center_y + raw_y*1000)), 5, (0, 0, 255), -1) 
+                cv2.circle(frame, (int(center_x + self.filtered_x*1000), int(center_y + self.filtered_y*1000)), 8, (0, 255, 0), 2) 
 
             else:
                 self.marker_visible = False
                 if self.kf_initialized:
                     cv2.putText(frame, "Mode: HOLD XY & DESCEND Z", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
-                    cv2.circle(frame, (int(320 + self.filtered_x*1000), int(240 + self.filtered_y*1000)), 8, (0, 255, 255), 2)
+                    cv2.circle(frame, (int(center_x + self.filtered_x*1000), int(center_y + self.filtered_y*1000)), 8, (0, 255, 255), 2)
                 else:
                     cv2.putText(frame, "Marker LOST", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-            height, width = frame.shape[:2]
             cv2.line(frame, (int(width/2) - 20, int(height/2)), (int(width/2) + 20, int(height/2)), (255, 0, 0), 2)
             cv2.line(frame, (int(width/2), int(height/2) - 20), (int(width/2), int(height/2) + 20), (255, 0, 0), 2)
 

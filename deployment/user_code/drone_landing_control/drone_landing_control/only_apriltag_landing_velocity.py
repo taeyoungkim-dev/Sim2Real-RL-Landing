@@ -73,7 +73,7 @@ class AprilTagUltimateLandNode(Node):
 
         # 비행 파라미터 (NED Z)
         self.takeoff_target_z = -8.0
-        self.descend_switch_z = (-1*self.takeoff_target_z) + 0.5
+        self.descend_switch_z = self.takeoff_target_z + 0.5
         self.land_trigger_z = -0.3
         self.takeoff_start_tick = 50
         self.target_altitude = 0.0
@@ -250,7 +250,6 @@ class AprilTagUltimateLandNode(Node):
 
                 raw_x = detection.pose_t[0][0]
                 raw_y = detection.pose_t[1][0]
-                distance_z = detection.pose_t[2][0]
 
                 measurement = np.array([[raw_x], [raw_y]], dtype=np.float32)
 
@@ -300,6 +299,7 @@ def main(args=None):
         rclpy.spin(node)
     except KeyboardInterrupt:
         node.is_recording = False
+        node.cam_thread.join()  # 카메라 스레드가 완전히 종료될 때까지 대기
     finally:
         node.destroy_node()
         rclpy.shutdown()

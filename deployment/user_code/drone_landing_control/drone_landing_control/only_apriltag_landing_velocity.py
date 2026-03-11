@@ -9,6 +9,7 @@ import threading
 import pupil_apriltags
 import os
 import datetime
+import time
 
 # ==========================================
 # 1. 캘리브레이션 및 AprilTag 설정
@@ -71,7 +72,7 @@ class AprilTagUltimateLandNode(Node):
         self.target_vx = 0.0
         self.target_vy = 0.0
         self.flight_state = "INIT"
-        self.is_recording = True
+        self.is_recording = True   # 카메라 루프 제어 (NAV_LAND + 5초 후 False)
 
         # 비행 파라미터 (NED Z)
         self.takeoff_target_z = -5.0
@@ -83,6 +84,10 @@ class AprilTagUltimateLandNode(Node):
         # CLIMBING 진입 시각 (하강 전환 시간 조건용)
         self.climbing_start_time = None
         self.descend_min_elapsed_sec = 5.0  # 상승 명령 후 최소 경과 시간 (GPS 튐 방지)
+
+        # NAV_LAND 명령 시각 (착륙 후 추가 녹화용)
+        self.landing_time = None
+        self.post_land_record_sec = 5.0  # NAV_LAND 신호 후 추가 녹화 시간
 
         # 칼만 필터 초기 세팅
         self.kf = cv2.KalmanFilter(4, 2)
@@ -149,7 +154,7 @@ class AprilTagUltimateLandNode(Node):
                 self.get_logger().info("6단계: 지면 접근 완료. 자동 착륙(Land)")
                 self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
                 self.flight_state = "LANDED"
-                self.is_recording = False
+                self.landing_time = time.time()  # 착륙 신호 시각 기록 (카메라는 5초 더 녹화)
             else:
                 if self.marker_visible and self.kf_initialized:
                     Kp_vel = 0.8
@@ -307,6 +312,11 @@ class AprilTagUltimateLandNode(Node):
             cv2.line(frame, (int(width / 2), int(height / 2) - 20), (int(width / 2), int(height / 2) + 20), (255, 0, 0), 2)
 
             out.write(frame)
+
+            # NAV_LAND 신호 후 post_land_record_sec 초가 지나면 루프 종료
+            if self.landing_time is not None and \
+               time.time() - self.landing_time >= self.post_land_record_sec:
+                self.is_recording = False
 
         cap.release()
         out.release()

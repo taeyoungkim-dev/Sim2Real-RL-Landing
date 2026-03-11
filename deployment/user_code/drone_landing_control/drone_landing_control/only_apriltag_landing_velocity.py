@@ -7,6 +7,8 @@ import cv2
 import numpy as np
 import threading
 import pupil_apriltags
+import os
+import datetime
 
 # ==========================================
 # 1. 캘리브레이션 및 AprilTag 설정
@@ -72,11 +74,15 @@ class AprilTagUltimateLandNode(Node):
         self.is_recording = True
 
         # 비행 파라미터 (NED Z)
-        self.takeoff_target_z = -8.0
-        self.descend_switch_z = self.takeoff_target_z + 0.5
-        self.land_trigger_z = -0.3
+        self.takeoff_target_z = -5.0
+        self.descend_switch_z = self.takeoff_target_z + 0.5  # -4.5m
+        self.land_trigger_z = -0.5
         self.takeoff_start_tick = 50
         self.target_altitude = 0.0
+
+        # CLIMBING 진입 시각 (하강 전환 시간 조건용)
+        self.climbing_start_time = None
+        self.descend_min_elapsed_sec = 5.0  # 상승 명령 후 최소 경과 시간 (GPS 튐 방지)
 
         # 칼만 필터 초기 세팅
         self.kf = cv2.KalmanFilter(4, 2)
@@ -117,19 +123,28 @@ class AprilTagUltimateLandNode(Node):
         elif self.timer_count == self.takeoff_start_tick and self.flight_state in ["INIT", "ARMED_WAIT"]:
             self.flight_state = "CLIMBING"
             self.target_altitude = self.takeoff_target_z
-            self.get_logger().info(f"4단계: 목표 고도 8m로 부드럽게 상승 시작!")
+            self.climbing_start_time = self.get_clock().now()
+            self.get_logger().info(f"4단계: 목표 고도 5m로 부드럽게 상승 시작!")
 
         elif self.flight_state == "CLIMBING":
-            # 실제 고도가 6.5m (NED -6.5) 이상 도달했을 때 하강 시작
-            if self.current_z <= self.descend_switch_z:
+            # 하강 전환 조건: 고도 도달 OR 상승 명령 후 최소 경과 시간 충족
+            # GPS 튐으로 고도 조건이 일시적으로 충족되더라도 시간 조건으로 안전하게 전환 가능
+            elapsed_sec = (self.get_clock().now() - self.climbing_start_time).nanoseconds / 1e9
+            altitude_reached = self.current_z <= self.descend_switch_z
+            time_elapsed = elapsed_sec >= self.descend_min_elapsed_sec
+
+            if altitude_reached or time_elapsed:
                 self.flight_state = "DESCENDING"
-                self.get_logger().info(f"5단계: 하강 전환 고도({self.descend_switch_z}m) 도달. 마커 추적 하강 시작")
+                trigger = "고도" if altitude_reached else "경과시간"
+                self.get_logger().info(
+                    f"5단계: [{trigger}] 조건 충족 (고도={self.current_z:.1f}m, 경과={elapsed_sec:.1f}s). 마커 추적 하강 시작"
+                )
                 # 하강을 시작할 때, 기본 위치를 현재 위치로 락온(Lock-on)
                 self.hold_x = self.current_x
                 self.hold_y = self.current_y
 
         elif self.flight_state == "DESCENDING":
-            # 실제 고도가 0.3m (NED -0.3) 미만으로 내려왔을 때 착륙
+            # 실제 고도가 0.5m (NED -0.5) 미만으로 내려왔을 때 착륙
             if self.current_z > self.land_trigger_z:
                 self.get_logger().info("6단계: 지면 접근 완료. 자동 착륙(Land)")
                 self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
@@ -172,11 +187,11 @@ class AprilTagUltimateLandNode(Node):
             if self.marker_visible:
                 # 마커 발견 시: X, Y, Z 모두 속도(Velocity) 제어
                 msg.position = [np.nan, np.nan, np.nan]
-                msg.velocity = [self.target_vx, self.target_vy, 0.3]  # Vz=0.3 (하강)
+                msg.velocity = [self.target_vx, self.target_vy, 0.8]  # Vz=0.8 (하강)
             else:
                 # 마커 놓쳤을 때: X, Y는 위치(Position) 고정, Z만 속도(Velocity) 하강
                 msg.position = [self.hold_x, self.hold_y, np.nan]
-                msg.velocity = [np.nan, np.nan, 0.3]  # Vz=0.3 (하강)
+                msg.velocity = [np.nan, np.nan, 0.8]  # Vz=0.8 (하강)
 
         msg.yaw = 0.0
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
@@ -200,10 +215,16 @@ class AprilTagUltimateLandNode(Node):
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter('apriltag_ultimate_land.mp4', fourcc, 30.0, (640, 480))
+        # 동영상 저장 경로: 패키지 루트/video/찍은시각.mp4
+        video_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'video')
+        os.makedirs(video_dir, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        video_path = os.path.join(video_dir, f'{timestamp}.mp4')
 
-        self.get_logger().info("카메라 녹화 시작: apriltag_ultimate_land.mp4")
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(video_path, fourcc, 30.0, (640, 480))
+
+        self.get_logger().info(f"카메라 녹화 시작: {video_path}")
 
         # undistort에 사용할 0 왜곡 계수 (프레임을 펴고 나면 왜곡이 없는 상태)
         zero_dist = np.zeros((4, 1))
@@ -289,7 +310,7 @@ class AprilTagUltimateLandNode(Node):
 
         cap.release()
         out.release()
-        self.get_logger().info("녹화 완료 및 저장 성공!")
+        self.get_logger().info(f"녹화 완료 및 저장 성공! ({video_path})")
 
 
 def main(args=None):

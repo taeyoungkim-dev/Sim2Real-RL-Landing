@@ -80,6 +80,7 @@ class AprilTagUltimateLandNode(Node):
         self.land_trigger_z = -0.5
         self.takeoff_start_tick = 50
         self.target_altitude = 0.0
+        self.descending_velocity = 0.5
 
         # CLIMBING 진입 시각 (하강 전환 시간 조건용)
         self.climbing_start_time = None
@@ -192,11 +193,11 @@ class AprilTagUltimateLandNode(Node):
             if self.marker_visible:
                 # 마커 발견 시: X, Y, Z 모두 속도(Velocity) 제어
                 msg.position = [np.nan, np.nan, np.nan]
-                msg.velocity = [self.target_vx, self.target_vy, 0.8]  # Vz=0.8 (하강)
+                msg.velocity = [self.target_vx, self.target_vy, self.descending_velocity]  # Vz=0.5 (하강)
             else:
                 # 마커 놓쳤을 때: X, Y는 위치(Position) 고정, Z만 속도(Velocity) 하강
                 msg.position = [self.hold_x, self.hold_y, np.nan]
-                msg.velocity = [np.nan, np.nan, 0.8]  # Vz=0.8 (하강)
+                msg.velocity = [np.nan, np.nan, self.descending_velocity]  # Vz=0.5 (하강)
 
         msg.yaw = 0.0
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)

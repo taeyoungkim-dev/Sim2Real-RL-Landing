@@ -12,3 +12,7 @@ services:
     tty: true
     stdin_open: true
     restart: always
+    cap_add:
+      - sys_nice
+    ulimits:
+      rtprio: 99

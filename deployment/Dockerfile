@@ -32,7 +32,7 @@ RUN echo '#!/bin/bash' > /ros_entrypoint.sh && \
     echo 'set -e' >> /ros_entrypoint.sh && \
     echo 'source /opt/ros/humble/setup.bash' >> /ros_entrypoint.sh && \
     echo 'source /ros2_ws/install/setup.bash' >> /ros_entrypoint.sh && \
-    echo 'nohup MicroXRCEAgent serial --dev /dev/ttyAMA0 -b 921600 > /tmp/agent.log 2>&1 &' >> /ros_entrypoint.sh && \
+    echo 'nohup chrt -f 99 MicroXRCEAgent serial --dev /dev/ttyAMA0 -b 921600 > /tmp/agent.log 2>&1 &' >> /ros_entrypoint.sh && \
     echo 'exec "$@"' >> /ros_entrypoint.sh && \
     chmod +x /ros_entrypoint.sh
 

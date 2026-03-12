@@ -84,7 +84,7 @@ class AprilTagUltimateLandNode(Node):
 
         # CLIMBING 진입 시각 (하강 전환 시간 조건용)
         self.climbing_start_time = None
-        self.descend_min_elapsed_sec = 5.0  # 상승 명령 후 최소 경과 시간 (GPS 튐 방지)
+        self.descend_min_elapsed_sec = 15.0  # 상승 명령 후 최소 경과 시간 (GPS 튐 방지)
 
         # NAV_LAND 명령 시각 (착륙 후 추가 녹화용)
         self.landing_time = None

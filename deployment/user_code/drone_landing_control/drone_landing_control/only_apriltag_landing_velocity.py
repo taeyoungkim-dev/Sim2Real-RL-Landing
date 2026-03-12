@@ -9,7 +9,6 @@ import threading
 import pupil_apriltags
 import os
 import datetime
-import time
 
 # ==========================================
 # 1. 캘리브레이션 및 AprilTag 설정
@@ -64,6 +63,7 @@ class AprilTagUltimateLandNode(Node):
         self.current_x = 0.0
         self.current_y = 0.0
         self.current_z = 0.0  # NED 좌표계 (예: -7.0 이 7m 상공)
+        self.initial_yaw = None  # 첫 번째 콜백에서 캡처한 초기 yaw (NED 라디안)
 
         # 마커를 놓쳤을 때 위치를 고정할 변수 (제자리 하강용)
         self.hold_x = 0.0
@@ -72,23 +72,27 @@ class AprilTagUltimateLandNode(Node):
         self.target_vx = 0.0
         self.target_vy = 0.0
         self.flight_state = "INIT"
-        self.is_recording = True   # 카메라 루프 제어 (NAV_LAND + 5초 후 False)
+        self.is_recording = True   # 카메라 루프 제어 (Ctrl+C 종료 시 False)
 
         # 비행 파라미터 (NED Z)
-        self.takeoff_target_z = -5.0
-        self.descend_switch_z = self.takeoff_target_z + 0.5  # -4.5m
+        self.takeoff_target_z = -7.0
+        self.descend_switch_z = self.takeoff_target_z + 0.5  # -6.5m
         self.land_trigger_z = -0.5
         self.takeoff_start_tick = 50
         self.target_altitude = 0.0
         self.descending_velocity = 0.5
 
-        # CLIMBING 진입 시각 (하강 전환 시간 조건용)
+        # CLIMBING 진입 시각 (탐색 전환 시간 조건용)
         self.climbing_start_time = None
         self.descend_min_elapsed_sec = 15.0  # 상승 명령 후 최소 경과 시간 (GPS 튐 방지)
 
-        # NAV_LAND 명령 시각 (착륙 후 추가 녹화용)
-        self.landing_time = None
-        self.post_land_record_sec = 5.0  # NAV_LAND 신호 후 추가 녹화 시간
+        # SEARCHING 파라미터
+        self.searching_start_time = None
+        self.searching_start_x = 0.0
+        self.searching_start_y = 0.0
+        self.searching_forward_speed = 0.5   # 전방 이동 속도 (m/s)
+        self.searching_max_distance = 5.0    # 최대 전진 거리 (m)
+        self.searching_max_elapsed_sec = 20.0  # SEARCHING 최대 유지 시간 (s)
 
         # 칼만 필터 초기 세팅
         self.kf = cv2.KalmanFilter(4, 2)
@@ -110,6 +114,9 @@ class AprilTagUltimateLandNode(Node):
         self.current_x = msg.x
         self.current_y = msg.y
         self.current_z = msg.z
+        if self.initial_yaw is None:
+            self.initial_yaw = msg.heading
+            self.get_logger().info(f"초기 Yaw 캡처: {np.degrees(self.initial_yaw):.1f}°")
 
     def timer_callback(self):
         self.publish_offboard_control_mode()
@@ -133,29 +140,50 @@ class AprilTagUltimateLandNode(Node):
             self.get_logger().info(f"4단계: 목표 고도 5m로 부드럽게 상승 시작!")
 
         elif self.flight_state == "CLIMBING":
-            # 하강 전환 조건: 고도 도달 OR 상승 명령 후 최소 경과 시간 충족
+            # SEARCHING 전환 조건: 고도 도달 OR 상승 명령 후 최소 경과 시간 충족
             # GPS 튐으로 고도 조건이 일시적으로 충족되더라도 시간 조건으로 안전하게 전환 가능
             elapsed_sec = (self.get_clock().now() - self.climbing_start_time).nanoseconds / 1e9
             altitude_reached = self.current_z <= self.descend_switch_z
             time_elapsed = elapsed_sec >= self.descend_min_elapsed_sec
 
             if altitude_reached or time_elapsed:
-                self.flight_state = "DESCENDING"
+                self.flight_state = "SEARCHING"
                 trigger = "고도" if altitude_reached else "경과시간"
+                self.searching_start_time = self.get_clock().now()
+                self.searching_start_x = self.current_x
+                self.searching_start_y = self.current_y
                 self.get_logger().info(
-                    f"5단계: [{trigger}] 조건 충족 (고도={self.current_z:.1f}m, 경과={elapsed_sec:.1f}s). 마커 추적 하강 시작"
+                    f"5단계: [{trigger}] 조건 충족 (고도={self.current_z:.1f}m, 경과={elapsed_sec:.1f}s). AprilTag 탐색 시작 (전방 0.5m/s)"
                 )
-                # 하강을 시작할 때, 기본 위치를 현재 위치로 락온(Lock-on)
+
+        elif self.flight_state == "SEARCHING":
+            elapsed_sec = (self.get_clock().now() - self.searching_start_time).nanoseconds / 1e9
+            distance_forward = self.current_x - self.searching_start_x
+
+            tag_found = self.marker_visible
+            max_distance_reached = distance_forward >= self.searching_max_distance
+            time_elapsed = elapsed_sec >= self.searching_max_elapsed_sec
+
+            if tag_found or max_distance_reached or time_elapsed:
+                self.flight_state = "DESCENDING"
+                if tag_found:
+                    trigger = "AprilTag 발견"
+                elif max_distance_reached:
+                    trigger = f"최대 거리 도달({distance_forward:.1f}m)"
+                else:
+                    trigger = f"경과시간({elapsed_sec:.1f}s)"
+                self.get_logger().info(
+                    f"6단계: [{trigger}] DESCENDING 전환. 마커 추적 하강 시작"
+                )
                 self.hold_x = self.current_x
                 self.hold_y = self.current_y
 
         elif self.flight_state == "DESCENDING":
             # 실제 고도가 0.5m (NED -0.5) 미만으로 내려왔을 때 착륙
             if self.current_z > self.land_trigger_z:
-                self.get_logger().info("6단계: 지면 접근 완료. 자동 착륙(Land)")
+                self.get_logger().info("7단계: 지면 접근 완료. 자동 착륙(Land)")
                 self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
                 self.flight_state = "LANDED"
-                self.landing_time = time.time()  # 착륙 신호 시각 기록 (카메라는 5초 더 녹화)
             else:
                 if self.marker_visible and self.kf_initialized:
                     Kp_vel = 0.8
@@ -189,6 +217,11 @@ class AprilTagUltimateLandNode(Node):
             msg.position = [0.0, 0.0, self.target_altitude]
             msg.velocity = [np.nan, np.nan, np.nan]
 
+        elif self.flight_state == "SEARCHING":
+            # 고도 유지(Position Z) + 전방 0.5m/s 이동(Velocity X)
+            msg.position = [np.nan, np.nan, self.takeoff_target_z]
+            msg.velocity = [self.searching_forward_speed, 0.0, np.nan]
+
         elif self.flight_state == "DESCENDING":
             if self.marker_visible:
                 # 마커 발견 시: X, Y, Z 모두 속도(Velocity) 제어
@@ -199,7 +232,7 @@ class AprilTagUltimateLandNode(Node):
                 msg.position = [self.hold_x, self.hold_y, np.nan]
                 msg.velocity = [np.nan, np.nan, self.descending_velocity]  # Vz=0.5 (하강)
 
-        msg.yaw = 0.0
+        msg.yaw = self.initial_yaw if self.initial_yaw is not None else 0.0
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         self.trajectory_setpoint_pub.publish(msg)
 
@@ -314,11 +347,6 @@ class AprilTagUltimateLandNode(Node):
 
             out.write(frame)
 
-            # NAV_LAND 신호 후 post_land_record_sec 초가 지나면 루프 종료
-            if self.landing_time is not None and \
-               time.time() - self.landing_time >= self.post_land_record_sec:
-                self.is_recording = False
-
         cap.release()
         out.release()
         self.get_logger().info(f"녹화 완료 및 저장 성공! ({video_path})")
@@ -330,9 +358,10 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
+        pass
+    finally:
         node.is_recording = False
         node.cam_thread.join()  # 카메라 스레드가 완전히 종료될 때까지 대기
-    finally:
         node.destroy_node()
         rclpy.shutdown()
 

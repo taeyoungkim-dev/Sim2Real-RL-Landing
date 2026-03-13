@@ -79,7 +79,7 @@ class FinalAprilTagLandNode(Node):
         # CLIMBING 타이머
         # --------------------------------------------------
         self.climbing_start_time = None
-        self.climbing_duration_sec = 10.0  # velocity [0,0,-1]을 10초간 유지
+        self.climbing_duration_sec = 14.0  # velocity [0,0,-1]을 14초간 유지
 
         # --------------------------------------------------
         # SEARCHING - 구역: 드론 전방 기준 좌3m~우3m × 전방5m (6×5 직사각형)
@@ -109,9 +109,6 @@ class FinalAprilTagLandNode(Node):
         # AprilTag 최초 발견 여부 (True이면 lawnmower → 정렬 모드 전환)
         self.tag_found_ever = False
 
-        # 정렬 모드 중 태그 소실 타이머 (임계값 초과 시 lawnmower 복귀)
-        self.align_lost_time = None
-        self.align_lost_threshold_sec = 3.0
 
         # --------------------------------------------------
         # AprilTag 추적 속도 (SEARCHING 정렬 & DESCENDING 공용)
@@ -214,33 +211,13 @@ class FinalAprilTagLandNode(Node):
     # --------------------------------------------------
     def _handle_searching(self):
         if self.tag_found_ever:
-            # [정렬 모드] AprilTag X,Y 오차에 비례한 속도 제어 (Z=0)
+            # [접근 모드] 태그 방향으로 0.3 m/s 이동. 태그를 잃어도 lawnmower로 돌아가지 않음.
             if self.marker_visible and self.kf_initialized:
-                # 태그 보임 → 소실 타이머 리셋, 속도 갱신
-                self.align_lost_time = None
+                # 태그 보임 → 오차 비례 속도 갱신 (최대 0.3 m/s)
                 Kp = 0.8
-                self.target_vx = float(np.clip(Kp * (-self.filtered_y), -1.0, 1.0))
-                self.target_vy = float(np.clip(Kp * (self.filtered_x), -1.0, 1.0))
-            else:
-                # 태그 소실 → 타이머 시작
-                if self.align_lost_time is None:
-                    self.align_lost_time = self.get_clock().now()
-                else:
-                    elapsed_lost = (self.get_clock().now() - self.align_lost_time).nanoseconds / 1e9
-                    if elapsed_lost >= self.align_lost_threshold_sec:
-                        # 임계값 초과 → lawnmower 처음부터 재개
-                        self.get_logger().warn(
-                            f"정렬 중 태그 {elapsed_lost:.1f}초 소실. Lawnmower 재개"
-                        )
-                        self.tag_found_ever = False
-                        self.align_lost_time = None
-                        self.kf_initialized = False  # KF 리셋 (재감지 시 재초기화)
-                        self.search_phase_idx = 0
-                        self.search_phase_start_time = self.get_clock().now()
-                        vx_b, vy_b, _ = self.search_plan[0]
-                        vx_ned, vy_ned = self.body_to_ned(vx_b, vy_b)
-                        self.cmd_vx, self.cmd_vy, self.cmd_vz = vx_ned, vy_ned, 0.0
-                        return
+                self.target_vx = float(np.clip(Kp * (-self.filtered_y), -0.2, 0.2))
+                self.target_vy = float(np.clip(Kp * (self.filtered_x), -0.2, 0.2))
+            # 태그 소실 시에도 마지막 계산 속도를 그대로 유지 (재탐색 없음)
 
             # KF 예측값으로 오차 계산 (태그 순간 소실 시에도 예측값 활용)
             if self.kf_initialized:
@@ -252,7 +229,6 @@ class FinalAprilTagLandNode(Node):
                         f"6단계: 오차 {error:.2f}m < 0.5m. DESCENDING 전환"
                     )
 
-            # 태그를 놓쳤더라도 마지막 계산 속도 유지
             self.cmd_vx = self.target_vx
             self.cmd_vy = self.target_vy
             self.cmd_vz = 0.0
@@ -299,8 +275,8 @@ class FinalAprilTagLandNode(Node):
         if self.marker_visible and self.kf_initialized:
             self.tag_lost_start_time = None
             Kp = 0.8
-            self.target_vx = float(np.clip(Kp * (-self.filtered_y), -0.5, 0.5))
-            self.target_vy = float(np.clip(Kp * (self.filtered_x), -0.5, 0.5))
+            self.target_vx = float(np.clip(Kp * (-self.filtered_y), -0.1, 0.1))
+            self.target_vy = float(np.clip(Kp * (self.filtered_x), -0.1, 0.1))
         else:
             if self.tag_lost_start_time is None:
                 self.tag_lost_start_time = self.get_clock().now()

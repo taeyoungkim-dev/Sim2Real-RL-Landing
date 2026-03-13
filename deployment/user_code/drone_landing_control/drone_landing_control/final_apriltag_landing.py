@@ -6,6 +6,7 @@ from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand
 import cv2
 import numpy as np
 import threading
+import time
 import pupil_apriltags
 import os
 import datetime
@@ -63,7 +64,7 @@ class FinalAprilTagLandNode(Node):
         # 비행 상태 및 속도 명령 (NED 프레임)
         # --------------------------------------------------
         self.flight_state = "INIT"
-        self.is_recording = True
+        self.stop_recording_event = threading.Event()
 
         self.cmd_vx = 0.0  # NED X (North)
         self.cmd_vy = 0.0  # NED Y (East)
@@ -371,89 +372,96 @@ class FinalAprilTagLandNode(Node):
             camera_matrix, dist_coeffs, None, camera_matrix, (640, 480), cv2.CV_16SC2
         )
 
-        while self.is_recording:
-            ret, frame = cap.read()
-            if not ret:
-                continue
+        while not self.stop_recording_event.is_set():
+            try:
+                ret, frame = cap.read()
+                if not ret:
+                    # 카메라 프레임 읽기 실패 시에도 루프를 유지한다.
+                    time.sleep(0.01)
+                    continue
 
-            frame = cv2.remap(frame, map1, map2, cv2.INTER_LINEAR)
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            detections = apriltag_detector.detect(
-                gray,
-                estimate_tag_pose=True,
-                camera_params=camera_params,
-                tag_size=MARKER_SIZE
-            )
+                frame = cv2.remap(frame, map1, map2, cv2.INTER_LINEAR)
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                detections = apriltag_detector.detect(
+                    gray,
+                    estimate_tag_pose=True,
+                    camera_params=camera_params,
+                    tag_size=MARKER_SIZE
+                )
 
-            # 비행 상태 오버레이
-            state_colors = {
-                "INIT": (200, 200, 200), "ARMED_WAIT": (200, 200, 0),
-                "CLIMBING": (0, 200, 255), "SEARCHING": (255, 165, 0),
-                "DESCENDING": (0, 255, 0), "LANDING": (0, 0, 255),
-            }
-            color = state_colors.get(self.flight_state, (255, 255, 255))
-            cv2.putText(frame, f"State: {self.flight_state}", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                # 비행 상태 오버레이
+                state_colors = {
+                    "INIT": (200, 200, 200), "ARMED_WAIT": (200, 200, 0),
+                    "CLIMBING": (0, 200, 255), "SEARCHING": (255, 165, 0),
+                    "DESCENDING": (0, 255, 0), "LANDING": (0, 0, 255),
+                }
+                color = state_colors.get(self.flight_state, (255, 255, 255))
+                cv2.putText(frame, f"State: {self.flight_state}", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-            # KF 예측 (매 프레임)
-            if self.kf_initialized:
-                prediction = self.kf.predict()
-                self.filtered_x = prediction[0][0]
-                self.filtered_y = prediction[1][0]
-
-            if len(detections) > 0:
-                self.marker_visible = True
-                detection = detections[0]
-
-                corners = detection.corners.astype(int)
-                cv2.polylines(frame, [corners.reshape((-1, 1, 2))], True, (0, 255, 0), 2)
-                cv2.putText(frame, str(detection.tag_id), tuple(corners[0]),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-
-                raw_x = detection.pose_t[0][0]
-                raw_y = detection.pose_t[1][0]
-                measurement = np.array([[raw_x], [raw_y]], dtype=np.float32)
-
-                if not self.kf_initialized:
-                    self.kf.statePost = np.array([[raw_x], [raw_y], [0], [0]], dtype=np.float32)
-                    self.kf_initialized = True
-                else:
-                    estimated = self.kf.correct(measurement)
-                    self.filtered_x = estimated[0][0]
-                    self.filtered_y = estimated[1][0]
-
-                rvec, _ = cv2.Rodrigues(detection.pose_R)
-                tvec = detection.pose_t
-                cv2.drawFrameAxes(frame, camera_matrix, zero_dist, rvec, tvec, MARKER_SIZE / 2)
-
-                error = np.sqrt(self.filtered_x ** 2 + self.filtered_y ** 2)
-                text = (f"TRACKING | Err:{error:.2f}m | "
-                        f"Vx:{self.cmd_vx:.2f} Vy:{self.cmd_vy:.2f} Vz:{self.cmd_vz:.2f}")
-                cv2.putText(frame, text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
-
-                cv2.circle(frame, (int(320 + raw_x * 1000), int(240 + raw_y * 1000)), 5, (0, 0, 255), -1)
-                cv2.circle(frame, (int(320 + self.filtered_x * 1000), int(240 + self.filtered_y * 1000)), 8, (0, 255, 0), 2)
-
-            else:
-                self.marker_visible = False
-                if self.tag_found_ever:
-                    text = (f"Tag LOST | HOLD VEL | "
-                            f"Vx:{self.cmd_vx:.2f} Vy:{self.cmd_vy:.2f} Vz:{self.cmd_vz:.2f}")
-                    cv2.putText(frame, text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 165, 255), 2)
-                elif self.flight_state == "SEARCHING":
-                    phase_text = f"LAWNMOWER {self.search_phase_idx + 1}/{len(self.search_plan)}"
-                    cv2.putText(frame, phase_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                else:
-                    cv2.putText(frame, "No Tag", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 100), 2)
-
+                # KF 예측 (매 프레임)
                 if self.kf_initialized:
-                    cv2.circle(frame, (int(320 + self.filtered_x * 1000), int(240 + self.filtered_y * 1000)), 8, (0, 255, 255), 2)
+                    prediction = self.kf.predict()
+                    self.filtered_x = prediction[0][0]
+                    self.filtered_y = prediction[1][0]
 
-            h, w = frame.shape[:2]
-            cv2.line(frame, (w // 2 - 20, h // 2), (w // 2 + 20, h // 2), (255, 0, 0), 2)
-            cv2.line(frame, (w // 2, h // 2 - 20), (w // 2, h // 2 + 20), (255, 0, 0), 2)
+                if len(detections) > 0:
+                    self.marker_visible = True
+                    detection = detections[0]
 
-            out.write(frame)
+                    corners = detection.corners.astype(int)
+                    cv2.polylines(frame, [corners.reshape((-1, 1, 2))], True, (0, 255, 0), 2)
+                    cv2.putText(frame, str(detection.tag_id), tuple(corners[0]),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+                    raw_x = detection.pose_t[0][0]
+                    raw_y = detection.pose_t[1][0]
+                    measurement = np.array([[raw_x], [raw_y]], dtype=np.float32)
+
+                    if not self.kf_initialized:
+                        self.kf.statePost = np.array([[raw_x], [raw_y], [0], [0]], dtype=np.float32)
+                        self.kf_initialized = True
+                    else:
+                        estimated = self.kf.correct(measurement)
+                        self.filtered_x = estimated[0][0]
+                        self.filtered_y = estimated[1][0]
+
+                    rvec, _ = cv2.Rodrigues(detection.pose_R)
+                    tvec = detection.pose_t
+                    cv2.drawFrameAxes(frame, camera_matrix, zero_dist, rvec, tvec, MARKER_SIZE / 2)
+
+                    error = np.sqrt(self.filtered_x ** 2 + self.filtered_y ** 2)
+                    text = (f"TRACKING | Err:{error:.2f}m | "
+                            f"Vx:{self.cmd_vx:.2f} Vy:{self.cmd_vy:.2f} Vz:{self.cmd_vz:.2f}")
+                    cv2.putText(frame, text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+
+                    cv2.circle(frame, (int(320 + raw_x * 1000), int(240 + raw_y * 1000)), 5, (0, 0, 255), -1)
+                    cv2.circle(frame, (int(320 + self.filtered_x * 1000), int(240 + self.filtered_y * 1000)), 8, (0, 255, 0), 2)
+
+                else:
+                    self.marker_visible = False
+                    if self.tag_found_ever:
+                        text = (f"Tag LOST | HOLD VEL | "
+                                f"Vx:{self.cmd_vx:.2f} Vy:{self.cmd_vy:.2f} Vz:{self.cmd_vz:.2f}")
+                        cv2.putText(frame, text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 165, 255), 2)
+                    elif self.flight_state == "SEARCHING":
+                        phase_text = f"LAWNMOWER {self.search_phase_idx + 1}/{len(self.search_plan)}"
+                        cv2.putText(frame, phase_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    else:
+                        cv2.putText(frame, "No Tag", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 100), 2)
+
+                    if self.kf_initialized:
+                        cv2.circle(frame, (int(320 + self.filtered_x * 1000), int(240 + self.filtered_y * 1000)), 8, (0, 255, 255), 2)
+
+                h, w = frame.shape[:2]
+                cv2.line(frame, (w // 2 - 20, h // 2), (w // 2 + 20, h // 2), (255, 0, 0), 2)
+                cv2.line(frame, (w // 2, h // 2 - 20), (w // 2, h // 2 + 20), (255, 0, 0), 2)
+
+                out.write(frame)
+            except Exception as exc:
+                # 예외가 발생해도 Ctrl+C 전까지 녹화 루프를 유지한다.
+                self.get_logger().error(f"camera_record_loop 예외 발생: {exc}")
+                time.sleep(0.05)
 
         cap.release()
         out.release()
@@ -468,7 +476,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.is_recording = False
+        node.stop_recording_event.set()
         node.cam_thread.join()
         node.destroy_node()
         rclpy.shutdown()
